@@ -1,0 +1,17 @@
+# AIN-7B Arabic OCR Dependencies
+# ================================
+
+# Core dependencies
+torch>=2.0.0
+transformers>=4.37.0
+accelerate>=0.25.0
+
+# Qwen2-VL specific utilities
+qwen-vl-utils>=0.0.8
+
+# Image processing
+Pillow>=9.0.0
+
+# Optional: Flash Attention 2 (for faster inference)
+# Uncomment if you have a compatible GPU and want faster inference
+# flash-attn>=2.5.0
