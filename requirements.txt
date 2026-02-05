@@ -1,3 +1,12 @@
+# Notepad++ Replica Dependencies
+# ================================
+# The main application uses only Python standard library (tkinter)
+# No external dependencies required for basic functionality!
+
+# Build dependencies (only needed to create portable .exe)
+pyinstaller>=6.0.0  # Optional: for building portable executable
+
+# ================================
 # AIN-7B Arabic OCR Dependencies
 # ================================
 
