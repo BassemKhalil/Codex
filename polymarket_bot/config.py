@@ -3,62 +3,67 @@ Configuration for the Polymarket Weather Trading Bot.
 
 Edit CONTRACTS to define the markets you want to trade.
 Edit STRATEGY_CONFIG to tune trading behavior.
+
+Price discovery modes (in priority order):
+  1. event_id   — fetches all brackets from a Polymarket event, computes
+                   P(high > threshold) from the market's own distribution.
+  2. condition_id — fetches YES price for a single binary market.
+  3. market_yes_price — manual fallback (0.0-1.0).
+
+Run `python run_bot.py discover --city "London"` to find event IDs.
 """
 
 from datetime import date, timedelta
 
 # ─── CONTRACTS TO MONITOR ────────────────────────────────────────────────────
-# Each contract represents a Polymarket-style over/under temperature bet.
-#   - market_yes_price: current market price for YES (0.0–1.0)
-#     e.g. 0.65 means the market thinks 65% chance the temp exceeds threshold
 CONTRACTS = [
     {
-        "id": "london-high-2026-03-19",
+        "id": "london-high-may4",
         "city": "London",
         "lat": 51.5074,
         "lon": -0.1278,
         "timezone": "Europe/London",
-        "target_date": (date.today() + timedelta(days=1)).isoformat(),
-        "threshold_c": 15.0,
-        "market_yes_price": 0.65,
-        "description": "London daily high > 15°C",
+        "target_date": "2026-05-04",
+        "threshold_c": 18.0,
+        "event_id": 439940,
+        "market_yes_price": 0.55,
+        "description": "London daily high > 18°C (May 4)",
     },
     {
-        "id": "london-high-2026-03-20",
+        "id": "london-high-may5",
         "city": "London",
         "lat": 51.5074,
         "lon": -0.1278,
         "timezone": "Europe/London",
-        "target_date": (date.today() + timedelta(days=2)).isoformat(),
+        "target_date": "2026-05-05",
         "threshold_c": 16.0,
+        "event_id": 443298,
         "market_yes_price": 0.55,
-        "description": "London daily high > 16°C",
+        "description": "London daily high > 16°C (May 5)",
     },
 ]
 
 # ─── STRATEGY CONFIGURATION ──────────────────────────────────────────────────
 STRATEGY_CONFIG = {
-    # Consensus Edge strategy: bet when our probability diverges from market
     "consensus_edge": {
         "enabled": True,
-        "min_edge": 0.15,           # minimum probability edge to trigger (15%)
-        "max_std_dev_c": 3.0,       # skip if model disagreement exceeds this
+        "min_edge": 0.15,
+        "max_std_dev_c": 3.0,
     },
-    # High Confidence strategy: bet only when models tightly agree
     "high_confidence": {
         "enabled": True,
-        "max_std_dev_c": 1.0,       # models must agree within this range
-        "min_probability": 0.75,    # our estimated probability must exceed this
+        "max_std_dev_c": 1.0,
+        "min_probability": 0.75,
     },
 }
 
 # ─── TRADING PARAMETERS ──────────────────────────────────────────────────────
-STAKE_PER_TRADE = 10.0          # dollars per paper trade
-STARTING_BALANCE = 1000.0       # initial paper trading balance
-MIN_MODELS_REQUIRED = 3         # need at least this many models to trade
+STAKE_PER_TRADE = 10.0
+STARTING_BALANCE = 1000.0
+MIN_MODELS_REQUIRED = 3
 
 # ─── SCHEDULER ────────────────────────────────────────────────────────────────
-DEFAULT_INTERVAL_MINUTES = 360  # 6 hours between scheduled runs
+DEFAULT_INTERVAL_MINUTES = 360
 
 # ─── DATABASE ─────────────────────────────────────────────────────────────────
 DB_PATH = "polymarket_bot.db"
