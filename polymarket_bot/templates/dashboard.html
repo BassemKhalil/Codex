@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polymarket Weather Bot</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            dark: { 800: '#1a1a2e', 700: '#16213e', 600: '#0f3460', 500: '#533483' },
+            accent: '#e94560',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background: #0f0f1a; color: #e0e0e0; font-family: 'Inter', system-ui, sans-serif; }
+    .card { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; }
+    .card-green { border-left: 4px solid #22c55e; }
+    .card-red { border-left: 4px solid #ef4444; }
+    .card-blue { border-left: 4px solid #3b82f6; }
+    .card-purple { border-left: 4px solid #a855f7; }
+    .card-amber { border-left: 4px solid #f59e0b; }
+    .card-cyan { border-left: 4px solid #06b6d4; }
+    table { border-collapse: collapse; width: 100%; }
+    th { color: #9ca3af; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    td, th { padding: 10px 14px; text-align: left; border-bottom: 1px solid #2a2a4a; }
+    tr:hover td { background: #1e1e36; }
+    .badge { padding: 2px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+    .badge-win { background: #22c55e22; color: #4ade80; }
+    .badge-loss { background: #ef444422; color: #f87171; }
+    .badge-open { background: #3b82f622; color: #60a5fa; }
+    .pnl-pos { color: #4ade80; }
+    .pnl-neg { color: #f87171; }
+  </style>
+</head>
+<body class="min-h-screen p-6">
+  <div class="max-w-7xl mx-auto">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-8">
+      <div>
+        <h1 class="text-2xl font-bold text-white">Polymarket Weather Bot</h1>
+        <p class="text-sm text-gray-400 mt-1">Paper Trading Dashboard</p>
+      </div>
+      <div class="text-right text-sm text-gray-500">
+        <div>Balance: <span class="text-white font-mono text-lg">${{ "%.2f"|format(metrics.balance) }}</span></div>
+        <div class="mt-1">Starting: ${{ "%.2f"|format(config.STARTING_BALANCE) }}</div>
+      </div>
+    </div>
+
+    <!-- Metric Cards -->
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+      <div class="card card-blue p-4">
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Total Trades</div>
+        <div class="text-2xl font-bold text-white mt-1">{{ metrics.total_trades }}</div>
+      </div>
+      <div class="card card-amber p-4">
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Open</div>
+        <div class="text-2xl font-bold text-white mt-1">{{ metrics.open_trades }}</div>
+      </div>
+      <div class="card card-green p-4">
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Win Rate</div>
+        <div class="text-2xl font-bold text-white mt-1">{{ "%.0f"|format(metrics.win_rate * 100) }}%</div>
+        <div class="text-xs text-gray-500">{{ metrics.wins }}W / {{ metrics.losses }}L</div>
+      </div>
+      <div class="card {{ 'card-green' if metrics.total_pnl >= 0 else 'card-red' }} p-4">
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Total P&amp;L</div>
+        <div class="text-2xl font-bold {{ 'pnl-pos' if metrics.total_pnl >= 0 else 'pnl-neg' }} mt-1">
+          {{ "+" if metrics.total_pnl >= 0 else "" }}${{ "%.2f"|format(metrics.total_pnl) }}
+        </div>
+      </div>
+      <div class="card card-purple p-4">
+        <div class="text-xs text-gray-400 uppercase tracking-wide">ROI</div>
+        <div class="text-2xl font-bold text-white mt-1">{{ "%.1f"|format(metrics.roi * 100) }}%</div>
+      </div>
+      <div class="card card-cyan p-4">
+        <div class="text-xs text-gray-400 uppercase tracking-wide">Avg Edge</div>
+        <div class="text-2xl font-bold text-white mt-1">{{ "%.1f"|format(metrics.avg_edge * 100) }}%</div>
+      </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+      <div class="card p-5">
+        <h2 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">Balance Over Time</h2>
+        <canvas id="balanceChart" height="200"></canvas>
+      </div>
+      <div class="card p-5">
+        <h2 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">Strategy Performance</h2>
+        <canvas id="strategyChart" height="200"></canvas>
+      </div>
+    </div>
+
+    <!-- Open Positions -->
+    {% if open_positions %}
+    <div class="card p-5 mb-8">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">Open Positions</h2>
+      <div class="overflow-x-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Contract</th>
+              <th>Date</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Edge</th>
+              <th>Strategy</th>
+              <th>Model Median</th>
+              <th>Threshold</th>
+              <th>Stake</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in open_positions %}
+            <tr>
+              <td class="text-white font-medium">{{ t.description or t.contract_id }}</td>
+              <td>{{ t.target_date }}</td>
+              <td>
+                <span class="badge {{ 'badge-win' if t.side == 'YES' else 'badge-loss' }}">{{ t.side }}</span>
+              </td>
+              <td class="font-mono">{{ "%.2f"|format(t.entry_price) }}</td>
+              <td class="font-mono pnl-pos">+{{ "%.1f"|format(t.edge * 100) }}%</td>
+              <td>{{ t.strategy }}</td>
+              <td class="font-mono">{{ "%.1f"|format(t.model_median) }}°C</td>
+              <td class="font-mono">{{ "%.1f"|format(t.threshold_c) }}°C</td>
+              <td class="font-mono">${{ "%.2f"|format(t.stake) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Trade History -->
+    <div class="card p-5">
+      <h2 class="text-sm font-semibold text-gray-300 mb-4 uppercase tracking-wide">Trade History</h2>
+      {% if trades %}
+      <div class="overflow-x-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Time</th>
+              <th>Contract</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Strategy</th>
+              <th>Edge</th>
+              <th>Status</th>
+              <th>Actual</th>
+              <th>P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in trades %}
+            <tr>
+              <td class="text-gray-500">{{ t.id }}</td>
+              <td class="text-sm">{{ t.timestamp[:16] }}</td>
+              <td class="text-white font-medium">{{ t.description or t.contract_id }}</td>
+              <td>
+                <span class="badge {{ 'badge-win' if t.side == 'YES' else 'badge-loss' }}">{{ t.side }}</span>
+              </td>
+              <td class="font-mono">{{ "%.2f"|format(t.entry_price) }}</td>
+              <td>{{ t.strategy }}</td>
+              <td class="font-mono">{{ "%.1f"|format(t.edge * 100) }}%</td>
+              <td>
+                {% if t.status == 'open' %}
+                  <span class="badge badge-open">OPEN</span>
+                {% elif t.outcome == 'win' %}
+                  <span class="badge badge-win">WIN</span>
+                {% else %}
+                  <span class="badge badge-loss">LOSS</span>
+                {% endif %}
+              </td>
+              <td class="font-mono">
+                {% if t.actual_temp_c is not none %}
+                  {{ "%.1f"|format(t.actual_temp_c) }}°C
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="font-mono {{ 'pnl-pos' if t.pnl and t.pnl >= 0 else 'pnl-neg' if t.pnl else '' }}">
+                {% if t.pnl is not none %}
+                  {{ "+" if t.pnl >= 0 else "" }}${{ "%.2f"|format(t.pnl) }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="text-gray-500 text-center py-8">No trades yet. Run the bot to start paper trading.</p>
+      {% endif %}
+    </div>
+
+    <div class="text-center text-gray-600 text-xs mt-8 pb-4">
+      Polymarket Weather Bot &middot; Paper Trading Mode &middot; Not Financial Advice
+    </div>
+  </div>
+
+  <script>
+    const chartDefaults = {
+      color: '#9ca3af',
+      borderColor: '#2a2a4a',
+    };
+    Chart.defaults.color = chartDefaults.color;
+    Chart.defaults.borderColor = chartDefaults.borderColor;
+
+    // Balance chart
+    fetch('/api/balance_history')
+      .then(r => r.json())
+      .then(data => {
+        const labels = data.map(d => d.timestamp.substring(0, 16));
+        const values = data.map(d => d.balance);
+        new Chart(document.getElementById('balanceChart'), {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [{
+              label: 'Balance ($)',
+              data: values,
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59,130,246,0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 2,
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { display: true, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+              y: { display: true, ticks: { callback: v => '$' + v.toFixed(0) } }
+            }
+          }
+        });
+      });
+
+    // Strategy performance chart
+    const stratData = {{ metrics.by_strategy | tojson }};
+    const stratNames = Object.keys(stratData);
+    if (stratNames.length > 0) {
+      new Chart(document.getElementById('strategyChart'), {
+        type: 'bar',
+        data: {
+          labels: stratNames,
+          datasets: [
+            {
+              label: 'P&L ($)',
+              data: stratNames.map(s => stratData[s].pnl),
+              backgroundColor: stratNames.map(s => stratData[s].pnl >= 0 ? '#22c55e88' : '#ef444488'),
+              borderColor: stratNames.map(s => stratData[s].pnl >= 0 ? '#22c55e' : '#ef4444'),
+              borderWidth: 1,
+            },
+            {
+              label: 'Win Rate (%)',
+              data: stratNames.map(s => (stratData[s].win_rate * 100)),
+              backgroundColor: '#3b82f688',
+              borderColor: '#3b82f6',
+              borderWidth: 1,
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+    } else {
+      document.getElementById('strategyChart').parentElement.innerHTML +=
+        '<p class="text-gray-500 text-center py-8">No settled trades yet.</p>';
+    }
+  </script>
+</body>
+</html>
