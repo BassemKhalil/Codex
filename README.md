@@ -19,12 +19,19 @@ That's it — no Android Studio, no cable, no computer. The same APK is also pub
 the **`LebaneseCarImportTax-apk`** artifact on each run under the **Actions** tab if you
 prefer (it downloads as a zip you then extract).
 
+The app has two tabs: a **Calculator** and a **Guide** that explains every input
+field, how Lebanese car import tax works, and the green-vehicle incentives.
+
 ## What it calculates
 
 - Customs duty (default 5%)
 - Excise / consumption tax (default 45%)
 - VAT (default 11%, applied on value + duties)
 - Optional 3% additional customs fee (toggle, off by default)
+- **Vehicle type (petrol/diesel, hybrid, electric)** applying the 2024 budget-law
+  green-vehicle relief: hybrids get customs + excise −80% and registration −70%;
+  fully electric cars are exempt from customs + excise and get registration −70%
+  (VAT still applies to both)
 - Optional CIF basis (folds shipping + insurance into the customs base)
 - Shipping, marine insurance, broker / clearance, port handling, registration + plates
 - Import cost (everything on top of the car) and the all-in landed total
@@ -33,6 +40,10 @@ prefer (it downloads as a zip you then extract).
 Every rate and fee is an editable field, so the same app handles any vehicle, not just
 the worked example. It opens pre-filled with the 2021 Porsche Macan Turbo case
 (value 48,600), which produces roughly 32,300 in duties and VAT and about 85,600 landed.
+
+The standard 5% customs + 45% excise + 11% VAT structure and the electric/hybrid relief
+are based on Lebanon's official customs calculator (customs.gov.lb) and the 2024 budget
+law (Article 69). Figures are estimates — confirm with a licensed broker before importing.
 
 ## Requirements
 
