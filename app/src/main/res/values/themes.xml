@@ -1,0 +1,7 @@
+<resources>
+    <!-- Window theme used before Compose draws. The live UI theme is defined in Kotlin. -->
+    <style name="Theme.CarImportTax" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/white</item>
+        <item name="android:statusBarColor">@color/cedar_red</item>
+    </style>
+</resources>

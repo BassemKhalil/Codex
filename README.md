@@ -1,90 +1,104 @@
-# AIN-7B Arabic OCR Test
+# Lebanon Car Import Tax
 
-Test script for running Arabic OCR using [MBZUAI's AIN-7B](https://huggingface.co/MBZUAI/AIN) multimodal model.
+A small native Android app (Kotlin + Jetpack Compose, Material 3) that estimates the
+total cost of importing a car into Lebanon. Everything recalculates live as you type.
+Blue Book / Schwacke values are entered manually.
 
-## About AIN-7B
+## Install on your phone (no desktop needed)
 
-AIN (Arabic INclusive) is the first Arabic-focused large multimodal model, developed by MBZUAI. It excels at:
+Every push to this repo builds the APK in the cloud with GitHub Actions and attaches it
+to a release, so you can install straight from your phone:
 
-- **OCR & Document Understanding** - Both typed and handwritten Arabic text
-- **Visual Understanding** - Image description and analysis
-- **Bilingual Support** - Arabic (MSA) and English
+1. Open this repo on your phone and go to the **Releases** page (or the **`apk-latest`**
+   release directly).
+2. Under **Assets**, tap **`LebaneseCarImportTax.apk`** to download it.
+3. Tap the downloaded file to install. The first time, Android asks you to allow your
+   browser / file manager to "install unknown apps" — enable it, then tap the APK again.
 
-The model is based on Qwen2-VL-7B, fine-tuned on 3.6M high-quality Arabic-English samples.
+That's it — no Android Studio, no cable, no computer. The same APK is also published as
+the **`LebaneseCarImportTax-apk`** artifact on each run under the **Actions** tab if you
+prefer (it downloads as a zip you then extract).
 
-## Installation
+## What it calculates
 
-```bash
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
+- Customs duty (default 5%)
+- Excise / consumption tax (default 45%)
+- VAT (default 11%, applied on value + duties)
+- Optional 3% additional customs fee (toggle, off by default)
+- Optional CIF basis (folds shipping + insurance into the customs base)
+- Shipping, marine insurance, broker / clearance, port handling, registration + plates
+- Import cost (everything on top of the car) and the all-in landed total
+- Lebanese pound equivalents at an editable exchange rate
 
-# Install dependencies
-pip install -r requirements.txt
+Every rate and fee is an editable field, so the same app handles any vehicle, not just
+the worked example. It opens pre-filled with the 2021 Porsche Macan Turbo case
+(value 48,600), which produces roughly 32,300 in duties and VAT and about 85,600 landed.
+
+## Requirements
+
+- Android Studio (Ladybug 2024.2 or newer recommended)
+- JDK 17 (bundled with current Android Studio)
+- An emulator or a device running Android 8.0 (API 26) or higher
+
+## Build and run
+
+1. Open Android Studio, choose **Open**, and select this `LebaneseCarImportTax` folder.
+2. Let Gradle sync. Android Studio will provision the Gradle wrapper and download
+   dependencies automatically the first time. Accept any prompt to update the Android
+   Gradle Plugin if your Studio version is newer than the one pinned here.
+3. Press **Run** to install on a connected device or emulator, or use
+   **Build > Build App Bundle(s) / APK(s) > Build APK(s)** to produce an installable APK.
+   The debug APK lands in `app/build/outputs/apk/debug/`.
+
+### Command line (optional)
+
+The Gradle wrapper is committed, so you only need a JDK 17 and the Android SDK:
+
+```
+./gradlew assembleDebug  # builds app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### GPU Requirements
+## Project layout
 
-- Minimum: NVIDIA GPU with 16GB VRAM
-- Recommended: NVIDIA GPU with 24GB+ VRAM for larger documents
-
-## Usage
-
-### Basic OCR
-
-```bash
-# Extract all text from an Arabic document
-python test_ain7b_ocr.py --image document.jpg
+```
+app/src/main/java/com/bassem/carimporttax/
+  CalculatorLogic.kt   pure calculation (inputs -> result), no Android dependencies
+  MainActivity.kt      Compose UI, live recalculation
+  ui/theme/            Material 3 theme, cedar-red accent
+app/src/main/res/      strings, colors, themes, adaptive launcher icon
 ```
 
-### Custom Prompts
+The calculation is isolated in `CalculatorLogic.kt`, so it is easy to unit test or reuse.
 
-```bash
-# Use a custom prompt for specific extraction
-python test_ain7b_ocr.py --image form.jpg --prompt "استخرج الاسماء والتواريخ من هذه الوثيقة"
+## Notes on the numbers
 
-# English prompt
-python test_ain7b_ocr.py --image document.jpg --prompt "Extract all handwritten text from this document"
+Lebanese customs values used cars on published Blue Book / Schwacke figures rather than
+the invoice, which is why the app takes that value as the customs basis. The headline
+"effective tax" is duties + VAT as a percentage of the vehicle value (about 66.5% with
+the default rates). The 3% additional customs fee has been re-extended in successive
+budget laws, so its status depends on the law in force. These are estimates; confirm the
+exact figure with a licensed broker or the official calculator at customs.gov.lb.
+
+## Building without a desktop IDE
+
+The project includes two ways to produce an APK without opening Android Studio:
+
+### Cloud build (phone only) — `.github/workflows/build.yml`
+Pushing to this repo runs the **Build APK** workflow automatically. It compiles the app
+with the committed Gradle wrapper and then:
+
+- attaches **`LebaneseCarImportTax.apk`** to the rolling **`apk-latest`** GitHub Release
+  (a direct, tappable download you can install from your phone), and
+- uploads the same file as the **`LebaneseCarImportTax-apk`** artifact under the run on
+  the **Actions** tab (downloads as a zip you extract first).
+
+The first time you install, enable "install unknown apps" for your browser or file
+manager, then tap the APK again.
+
+### Home server / any Linux box — `Dockerfile`
 ```
-
-### Advanced Options
-
-```bash
-# Use flash attention for faster inference
-python test_ain7b_ocr.py --image document.jpg --flash-attention
-
-# Save output to file
-python test_ain7b_ocr.py --image document.jpg --output result.txt
-
-# Increase max tokens for longer documents
-python test_ain7b_ocr.py --image document.jpg --max-tokens 4096
+DOCKER_BUILDKIT=1 docker build --target export --output ./out .
 ```
-
-## Example Prompts
-
-| Task | Prompt |
-|------|--------|
-| Full OCR | `اقرأ واستخرج كل النص من هذه الصورة` |
-| Handwritten only | `اقرأ النص المكتوب بخط اليد فقط` |
-| Extract names | `استخرج جميع الأسماء من هذه الوثيقة` |
-| Form extraction | `Extract all form fields and their values` |
-| Table extraction | `استخرج البيانات من الجدول في شكل منظم` |
-
-## Model Performance
-
-AIN-7B achieves strong performance on CAMEL-Bench, outperforming GPT-4o by 3.4% on average across 38 sub-domains. It particularly excels at:
-
-- OCR & Document Understanding
-- Remote Sensing
-- Agricultural Image Understanding
-
-## References
-
-- [AIN Hugging Face Model](https://huggingface.co/MBZUAI/AIN)
-- [AIN GitHub Repository](https://github.com/mbzuai-oryx/AIN)
-- [AIN Paper (arXiv)](https://arxiv.org/abs/2502.00094)
-
-## License
-
-This test script is provided for educational and research purposes. The AIN model is subject to its own license terms from MBZUAI.
+This drops `out/app-debug.apk` on the host. Copy it to your phone and tap to install.
+The build downloads the Android SDK and Gradle inside the container, so the machine
+just needs internet and Docker.
