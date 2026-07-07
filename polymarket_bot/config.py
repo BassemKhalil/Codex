@@ -1,54 +1,43 @@
 """
 Configuration for the Polymarket Weather Trading Bot.
 
-Edit CONTRACTS to define the markets you want to trade.
-Edit STRATEGY_CONFIG to tune trading behavior.
+The bot AUTO-DISCOVERS open "Highest temperature in {city}" events on
+Polymarket for each city in AUTO_DISCOVER_CITIES — no manual contract
+maintenance needed. The trading threshold is chosen per event as the
+bracket boundary with the largest model-vs-market edge.
 
-Price discovery modes (in priority order):
-  1. event_id   — fetches all brackets from a Polymarket event, computes
-                   P(high > threshold) from the market's own distribution.
-  2. condition_id — fetches YES price for a single binary market.
-  3. market_yes_price — manual fallback (0.0-1.0).
-
-Run `python run_bot.py discover --city "London"` to find event IDs.
+You can still pin manual contracts in MANUAL_CONTRACTS (same shape,
+with "event_id" / "condition_id" / "market_yes_price" price sources).
 """
 
+import os
 from datetime import date, timedelta
 
-# ─── CONTRACTS TO MONITOR ────────────────────────────────────────────────────
-CONTRACTS = [
-    {
-        "id": "london-high-may4",
-        "city": "London",
-        "lat": 51.5074,
-        "lon": -0.1278,
-        "timezone": "Europe/London",
-        "target_date": "2026-05-04",
-        "threshold_c": 18.0,
-        "event_id": 439940,
-        "market_yes_price": 0.55,
-        "description": "London daily high > 18°C (May 4)",
-    },
-    {
-        "id": "london-high-may5",
-        "city": "London",
-        "lat": 51.5074,
-        "lon": -0.1278,
-        "timezone": "Europe/London",
-        "target_date": "2026-05-05",
-        "threshold_c": 16.0,
-        "event_id": 443298,
-        "market_yes_price": 0.55,
-        "description": "London daily high > 16°C (May 5)",
-    },
+# ─── CITIES TO AUTO-DISCOVER ─────────────────────────────────────────────────
+# The bot searches Polymarket for open daily-high events for these cities.
+# Coordinates are used for the weather-model consensus and settlement.
+AUTO_DISCOVER_CITIES = [
+    {"city": "London", "lat": 51.5074, "lon": -0.1278, "timezone": "Europe/London"},
+    # {"city": "Seoul",  "lat": 37.5665, "lon": 126.9780, "timezone": "Asia/Seoul"},
+    # {"city": "NYC",    "lat": 40.7128, "lon": -74.0060, "timezone": "America/New_York"},
 ]
+
+# Only trade events up to this many days out (forecasts degrade quickly)
+MAX_DAYS_AHEAD = 3
+
+# ─── MANUAL CONTRACTS (optional) ─────────────────────────────────────────────
+MANUAL_CONTRACTS = []
+
+# Kept for backward compatibility with older imports; the bot now combines
+# manual + auto-discovered contracts at runtime.
+CONTRACTS = MANUAL_CONTRACTS
 
 # ─── STRATEGY CONFIGURATION ──────────────────────────────────────────────────
 STRATEGY_CONFIG = {
     "consensus_edge": {
         "enabled": True,
-        "min_edge": 0.15,
-        "max_std_dev_c": 3.0,
+        "min_edge": 0.15,           # minimum |our_prob - market_prob| to trade
+        "max_std_dev_c": 3.0,       # skip if models disagree more than this
     },
     "high_confidence": {
         "enabled": True,
@@ -56,6 +45,11 @@ STRATEGY_CONFIG = {
         "min_probability": 0.75,
     },
 }
+
+# Ignore brackets whose market probability is outside this band when picking
+# a threshold (near-resolved tails have no meaningful liquidity/payoff).
+THRESHOLD_MARKET_PROB_MIN = 0.03
+THRESHOLD_MARKET_PROB_MAX = 0.97
 
 # ─── TRADING PARAMETERS ──────────────────────────────────────────────────────
 STAKE_PER_TRADE = 10.0
@@ -66,8 +60,15 @@ MIN_MODELS_REQUIRED = 3
 DEFAULT_INTERVAL_MINUTES = 360
 
 # ─── DATABASE ─────────────────────────────────────────────────────────────────
-DB_PATH = "polymarket_bot.db"
+# On the VPS this resolves inside /opt/polymarket-bot (the service WorkingDirectory)
+DB_PATH = os.environ.get("BOT_DB_PATH", "polymarket_bot.db")
 
 # ─── DASHBOARD ────────────────────────────────────────────────────────────────
 DASHBOARD_HOST = "0.0.0.0"
-DASHBOARD_PORT = 5000
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "5000"))
+
+# Access token for the dashboard. REQUIRED when exposing it on a public VPS.
+# Set via environment:  export DASHBOARD_TOKEN="something-long-and-random"
+# Then open:  http://your-vps:5000/?token=something-long-and-random
+# (the token is remembered in a cookie after the first visit)
+DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")

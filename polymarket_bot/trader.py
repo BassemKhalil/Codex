@@ -2,14 +2,18 @@
 Paper trading engine with SQLite persistence.
 
 Handles trade execution, settlement (using observed temperatures),
-and portfolio metrics.
+analysis logging, and portfolio metrics.
 """
 
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 from polymarket_bot import config
 from polymarket_bot.weather import fetch_actual_temperature
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _get_db(db_path=None):
@@ -30,6 +34,10 @@ def init_db(db_path=None):
             city TEXT,
             target_date TEXT,
             threshold_c REAL,
+            lat REAL,
+            lon REAL,
+            timezone TEXT,
+            temp_unit TEXT DEFAULT 'C',
             side TEXT NOT NULL,
             strategy TEXT NOT NULL,
             entry_price REAL NOT NULL,
@@ -52,13 +60,39 @@ def init_db(db_path=None):
             balance REAL NOT NULL,
             event TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            contract_id TEXT NOT NULL,
+            description TEXT,
+            city TEXT,
+            target_date TEXT,
+            threshold_c REAL,
+            model_median REAL,
+            model_std REAL,
+            model_min REAL,
+            model_max REAL,
+            model_count INTEGER,
+            our_probability REAL,
+            market_probability REAL,
+            price_source TEXT,
+            edge REAL,
+            decision TEXT
+        );
     """)
-    # Seed starting balance if empty
+    # Migrate older trades tables that predate the coordinate columns
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
+    for col, typ in (("lat", "REAL"), ("lon", "REAL"), ("timezone", "TEXT"),
+                     ("temp_unit", "TEXT DEFAULT 'C'")):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
+
     cur = conn.execute("SELECT COUNT(*) FROM balance_history")
     if cur.fetchone()[0] == 0:
         conn.execute(
             "INSERT INTO balance_history (timestamp, balance, event) VALUES (?, ?, ?)",
-            (datetime.utcnow().isoformat(), config.STARTING_BALANCE, "initial_deposit"),
+            (_now(), config.STARTING_BALANCE, "initial_deposit"),
         )
     conn.commit()
     conn.close()
@@ -76,7 +110,7 @@ def get_balance(db_path=None):
 def _record_balance(conn, balance, event):
     conn.execute(
         "INSERT INTO balance_history (timestamp, balance, event) VALUES (?, ?, ?)",
-        (datetime.utcnow().isoformat(), balance, event),
+        (_now(), balance, event),
     )
 
 
@@ -96,16 +130,21 @@ def execute_trade(signal, contract, db_path=None):
     cur = conn.execute(
         """INSERT INTO trades
            (timestamp, contract_id, description, city, target_date, threshold_c,
+            lat, lon, timezone, temp_unit,
             side, strategy, entry_price, stake, model_median, model_std,
             our_probability, market_probability, edge, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
         (
-            datetime.utcnow().isoformat(),
+            _now(),
             contract["id"],
             contract.get("description", ""),
             contract["city"],
             contract["target_date"],
             contract["threshold_c"],
+            contract.get("lat"),
+            contract.get("lon"),
+            contract.get("timezone"),
+            contract.get("temp_unit", "C"),
             signal["side"],
             signal["strategy"],
             signal["entry_price"],
@@ -134,6 +173,68 @@ def has_open_trade(contract_id, strategy, db_path=None):
     return row is not None
 
 
+def record_analysis(contract, consensus, our_prob, market_prob, price_source,
+                    decision, db_path=None):
+    """Log an analysis snapshot so the dashboard can show forecast-vs-market history."""
+    conn = _get_db(db_path)
+    conn.execute(
+        """INSERT INTO analyses
+           (timestamp, contract_id, description, city, target_date, threshold_c,
+            model_median, model_std, model_min, model_max, model_count,
+            our_probability, market_probability, price_source, edge, decision)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            _now(),
+            contract["id"],
+            contract.get("description", ""),
+            contract["city"],
+            contract["target_date"],
+            contract["threshold_c"],
+            consensus["median_high"] if consensus else None,
+            consensus["std_high"] if consensus else None,
+            consensus["min_high"] if consensus else None,
+            consensus["max_high"] if consensus else None,
+            consensus["model_count"] if consensus else 0,
+            our_prob,
+            market_prob,
+            price_source,
+            (our_prob - market_prob) if (our_prob is not None and market_prob is not None) else None,
+            decision,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_latest_analyses(db_path=None):
+    """Most recent analysis per contract."""
+    conn = _get_db(db_path)
+    rows = conn.execute(
+        """SELECT a.* FROM analyses a
+           INNER JOIN (
+               SELECT contract_id, MAX(id) AS max_id FROM analyses GROUP BY contract_id
+           ) latest ON a.id = latest.max_id
+           ORDER BY a.target_date"""
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_analysis_history(contract_id=None, limit=200, db_path=None):
+    conn = _get_db(db_path)
+    if contract_id:
+        rows = conn.execute(
+            "SELECT * FROM analyses WHERE contract_id = ? ORDER BY id DESC LIMIT ?",
+            (contract_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM analyses ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def settle_trades(db_path=None):
     """Settle all open trades whose target_date has passed."""
     conn = _get_db(db_path)
@@ -144,25 +245,31 @@ def settle_trades(db_path=None):
 
     settled = []
     for trade in open_trades:
-        contract_cfg = _find_contract(trade["contract_id"])
-        lat = contract_cfg["lat"] if contract_cfg else 51.5074
-        lon = contract_cfg["lon"] if contract_cfg else -0.1278
-        tz = contract_cfg["timezone"] if contract_cfg else "Europe/London"
+        # Coordinates stored on the trade at execution time; fall back to the
+        # current config only for trades recorded before that column existed.
+        lat, lon, tz = trade["lat"], trade["lon"], trade["timezone"]
+        if lat is None or lon is None or tz is None:
+            contract_cfg = _find_contract(trade["contract_id"])
+            if not contract_cfg:
+                continue  # can't settle without coordinates
+            lat, lon, tz = contract_cfg["lat"], contract_cfg["lon"], contract_cfg["timezone"]
 
         actual = fetch_actual_temperature(lat, lon, tz, trade["target_date"])
         if actual is None:
             continue
 
+        # Polymarket brackets resolve on whole degrees in the market's native
+        # unit, so settle on the rounded value the market would use.
+        unit = (trade["temp_unit"] or "C") if "temp_unit" in trade.keys() else "C"
+        actual_native = actual * 9.0 / 5.0 + 32.0 if unit == "F" else actual
+
         threshold = trade["threshold_c"]
-        temp_exceeded = actual > threshold
+        temp_exceeded = round(actual_native) > threshold
         side = trade["side"]
         stake = trade["stake"]
         entry_price = trade["entry_price"]
 
-        if side == "YES":
-            won = temp_exceeded
-        else:
-            won = not temp_exceeded
+        won = temp_exceeded if side == "YES" else not temp_exceeded
 
         if won:
             pnl = stake * (1.0 - entry_price) / entry_price
@@ -170,21 +277,17 @@ def settle_trades(db_path=None):
             pnl = -stake
 
         outcome = "win" if won else "loss"
-        now = datetime.utcnow().isoformat()
 
         conn.execute(
             """UPDATE trades SET status='settled', outcome=?, actual_temp_c=?,
                pnl=?, settled_at=? WHERE id=?""",
-            (outcome, actual, pnl, now, trade["id"]),
+            (outcome, actual, pnl, _now(), trade["id"]),
         )
 
         balance = _get_current_balance(conn)
-        if won:
-            returned = stake + pnl
-        else:
-            returned = 0.0
-        new_balance = balance + returned
-        _record_balance(conn, new_balance, f"trade_settle:{trade['contract_id']}:{outcome}")
+        returned = stake + pnl if won else 0.0
+        _record_balance(conn, balance + returned,
+                        f"trade_settle:{trade['contract_id']}:{outcome}")
 
         settled.append({
             "id": trade["id"],
