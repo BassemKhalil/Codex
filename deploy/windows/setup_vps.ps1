@@ -35,6 +35,8 @@ if (-not (Test-Path "$AppDir\.env")) {
 DASHBOARD_TOKEN=$token
 DASHBOARD_PORT=5000
 BOT_DB_PATH=C:\polymarket-bot\polymarket_bot.db
+PYTHONUTF8=1
+PYTHONIOENCODING=utf-8
 "@ | Set-Content -Encoding ascii "$AppDir\.env"
     Write-Host "==> Generated dashboard token: $token"
 }
@@ -56,7 +58,7 @@ goto loop
 cd /d C:\polymarket-bot
 :loop
 for /f "usebackq tokens=1,* delims==" %%a in (".env") do set "%%a=%%b"
-.venv\Scripts\python.exe run_bot.py run --interval 360 >> bot.log 2>&1
+.venv\Scripts\python.exe -u run_bot.py run --interval 360 >> bot.log 2>&1
 echo Bot exited (%ERRORLEVEL%). Restarting in 60s...
 timeout /t 60 /nobreak >nul
 goto loop
