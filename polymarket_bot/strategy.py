@@ -113,6 +113,45 @@ def evaluate_high_confidence(contract, consensus, strategy_cfg):
     }
 
 
+def evaluate_open_window(city, lead_days, modal_price, model_bracket_prob,
+                         strategy_cfg):
+    """
+    Open-window modal-bracket strategy.
+
+    Buy the model's modal bracket early in a market's life if its price is
+    at or below the model's historical exact-bracket hit rate for this city
+    and lead time. Returns a signal dict or None.
+    """
+    if not strategy_cfg.get("enabled", False):
+        return None
+    if lead_days < strategy_cfg.get("min_lead_days", 2):
+        return None
+    if lead_days > strategy_cfg.get("max_lead_days", 3):
+        return None
+    if modal_price is None:
+        return None
+
+    rates = strategy_cfg.get("hit_rates", {}).get(city.lower())
+    if not rates:
+        return None  # no calibration data for this city -> don't trade
+    hit_rate = rates.get(lead_days) or rates.get(min(rates))
+    ceiling = hit_rate - strategy_cfg.get("entry_margin", 0.0)
+
+    if modal_price < strategy_cfg.get("min_price", 0.04):
+        return None
+    if modal_price > ceiling:
+        return None
+
+    return {
+        "strategy": "open_window",
+        "side": "YES",
+        "entry_price": modal_price,
+        "our_probability": model_bracket_prob,
+        "market_probability": modal_price,
+        "edge": hit_rate - modal_price,
+    }
+
+
 def generate_signals(contract, consensus, strategy_config):
     """Run all enabled strategies and return list of trade signals."""
     signals = []

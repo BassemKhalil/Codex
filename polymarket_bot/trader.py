@@ -38,6 +38,9 @@ def init_db(db_path=None):
             lon REAL,
             timezone TEXT,
             temp_unit TEXT DEFAULT 'C',
+            bet_type TEXT DEFAULT 'over',
+            bracket_low REAL,
+            event_id TEXT,
             side TEXT NOT NULL,
             strategy TEXT NOT NULL,
             entry_price REAL NOT NULL,
@@ -84,7 +87,9 @@ def init_db(db_path=None):
     # Migrate older trades tables that predate the coordinate columns
     existing = {r["name"] for r in conn.execute("PRAGMA table_info(trades)")}
     for col, typ in (("lat", "REAL"), ("lon", "REAL"), ("timezone", "TEXT"),
-                     ("temp_unit", "TEXT DEFAULT 'C'")):
+                     ("temp_unit", "TEXT DEFAULT 'C'"),
+                     ("bet_type", "TEXT DEFAULT 'over'"),
+                     ("bracket_low", "REAL"), ("event_id", "TEXT")):
         if col not in existing:
             conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
 
@@ -130,10 +135,10 @@ def execute_trade(signal, contract, db_path=None):
     cur = conn.execute(
         """INSERT INTO trades
            (timestamp, contract_id, description, city, target_date, threshold_c,
-            lat, lon, timezone, temp_unit,
+            lat, lon, timezone, temp_unit, bet_type, bracket_low, event_id,
             side, strategy, entry_price, stake, model_median, model_std,
             our_probability, market_probability, edge, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
         (
             _now(),
             contract["id"],
@@ -145,12 +150,15 @@ def execute_trade(signal, contract, db_path=None):
             contract.get("lon"),
             contract.get("timezone"),
             contract.get("temp_unit", "C"),
+            contract.get("bet_type", "over"),
+            contract.get("bracket_low"),
+            str(contract.get("event_id") or ""),
             signal["side"],
             signal["strategy"],
             signal["entry_price"],
             stake,
-            signal["model_median"],
-            signal["model_std"],
+            signal.get("model_median"),
+            signal.get("model_std"),
             signal["our_probability"],
             signal["market_probability"],
             signal["edge"],
@@ -245,31 +253,48 @@ def settle_trades(db_path=None):
 
     settled = []
     for trade in open_trades:
-        # Coordinates stored on the trade at execution time; fall back to the
-        # current config only for trades recorded before that column existed.
-        lat, lon, tz = trade["lat"], trade["lon"], trade["timezone"]
-        if lat is None or lon is None or tz is None:
-            contract_cfg = _find_contract(trade["contract_id"])
-            if not contract_cfg:
-                continue  # can't settle without coordinates
-            lat, lon, tz = contract_cfg["lat"], contract_cfg["lon"], contract_cfg["timezone"]
-
-        actual = fetch_actual_temperature(lat, lon, tz, trade["target_date"])
-        if actual is None:
-            continue
-
-        # Polymarket brackets resolve on whole degrees in the market's native
-        # unit, so settle on the rounded value the market would use.
-        unit = (trade["temp_unit"] or "C") if "temp_unit" in trade.keys() else "C"
-        actual_native = actual * 9.0 / 5.0 + 32.0 if unit == "F" else actual
-
+        bet_type = (trade["bet_type"] or "over") if "bet_type" in trade.keys() else "over"
         threshold = trade["threshold_c"]
-        temp_exceeded = round(actual_native) > threshold
+        bet_hit = None
+        actual = None
+
+        # Bracket bets settle against the market's own resolution when
+        # available — that is what a real position would pay on.
+        if bet_type == "bracket" and trade["event_id"]:
+            resolved = _resolve_event_bracket(trade["event_id"])
+            if resolved is not None:
+                lo = trade["bracket_low"] if trade["bracket_low"] is not None else threshold
+                bet_hit = lo <= resolved <= threshold
+                actual = float(resolved)
+
+        if bet_hit is None:
+            # Fallback (and the path for over/under bets): observed weather.
+            lat, lon, tz = trade["lat"], trade["lon"], trade["timezone"]
+            if lat is None or lon is None or tz is None:
+                contract_cfg = _find_contract(trade["contract_id"])
+                if not contract_cfg:
+                    continue  # can't settle without coordinates
+                lat, lon, tz = (contract_cfg["lat"], contract_cfg["lon"],
+                                contract_cfg["timezone"])
+
+            actual = fetch_actual_temperature(lat, lon, tz, trade["target_date"])
+            if actual is None:
+                continue
+
+            # Polymarket resolves on whole degrees in the market's native unit.
+            unit = (trade["temp_unit"] or "C") if "temp_unit" in trade.keys() else "C"
+            actual_native = actual * 9.0 / 5.0 + 32.0 if unit == "F" else actual
+            if bet_type == "bracket":
+                lo = trade["bracket_low"] if trade["bracket_low"] is not None else threshold
+                bet_hit = lo <= round(actual_native) <= threshold
+            else:
+                bet_hit = round(actual_native) > threshold
+
         side = trade["side"]
         stake = trade["stake"]
         entry_price = trade["entry_price"]
 
-        won = temp_exceeded if side == "YES" else not temp_exceeded
+        won = bet_hit if side == "YES" else not bet_hit
 
         if won:
             pnl = stake * (1.0 - entry_price) / entry_price
@@ -313,6 +338,24 @@ def _find_contract(contract_id):
     for c in config.CONTRACTS:
         if c["id"] == contract_id:
             return c
+    return None
+
+
+def _resolve_event_bracket(event_id):
+    """Winning bracket temp of a resolved Polymarket event, or None."""
+    try:
+        from polymarket_bot.polymarket_api import get_event
+        from polymarket_bot.brackets import parse_bracket_event
+        ev = get_event(event_id)
+        if not ev:
+            return None
+        brackets, _ = parse_bracket_event(ev)
+        winners = [b for b in brackets if b.get("final") is not None
+                   and b["final"] > 0.9]
+        if len(winners) == 1:
+            return winners[0]["temp"]
+    except Exception:
+        pass
     return None
 
 

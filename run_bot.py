@@ -17,13 +17,15 @@ config.MANUAL_CONTRACTS.
 """
 
 import argparse
-import re
+import math
 import time
 from datetime import date
 
 from polymarket_bot import config
 from polymarket_bot.weather import fetch_all_models, compute_consensus, c_to_f
-from polymarket_bot.strategy import generate_signals, estimate_probability_over
+from polymarket_bot.strategy import (generate_signals, estimate_probability_over,
+                                     evaluate_open_window)
+from polymarket_bot.brackets import parse_bracket_event, find_bracket_for
 from polymarket_bot.discovery import build_auto_contracts
 from polymarket_bot.trader import (
     init_db,
@@ -40,7 +42,7 @@ from polymarket_bot.polymarket_api import (
     get_event,
     get_market,
     get_live_yes_price,
-    parse_market_prices,
+    get_midpoint,
 )
 
 
@@ -64,58 +66,6 @@ def get_active_contracts():
 
 # ─── MARKET PARSING ───────────────────────────────────────────────────────────
 
-def _extract_temp_from_question(question):
-    """Extract the temperature value from a Polymarket question string."""
-    m = re.search(r"(-?\d+)\s*°?\s*[CF]", question)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"be\s+(-?\d+)", question)
-    if m:
-        return int(m.group(1))
-    return None
-
-
-def _parse_bracket_event(event_data):
-    """
-    Parse a Polymarket temperature bracket event.
-    Returns (brackets, unit) where brackets is a sorted list of
-    (temp, yes_price, is_lower, is_upper) and unit is 'C' or 'F'.
-    """
-    brackets = []
-    unit = "C"
-    for m in event_data.get("markets", []):
-        q = m.get("question", "")
-        if "°F" in q or re.search(r"\d\s*F\b", q):
-            unit = "F"
-        parsed = parse_market_prices(m)
-        yes_p = parsed["yes_price"]
-        if yes_p is None:
-            yes_p = get_live_yes_price(m) or 0.0
-
-        temp = _extract_temp_from_question(q)
-        if temp is None:
-            continue
-
-        ql = q.lower()
-        is_lower = "or below" in ql or "or less" in ql
-        is_upper = "or higher" in ql or "or above" in ql or "or more" in ql
-        brackets.append((temp, yes_p, is_lower, is_upper))
-
-    brackets.sort(key=lambda x: x[0])
-    return brackets, unit
-
-
-def _market_prob_over(brackets, threshold):
-    """Market-implied P(rounded high > threshold) = sum of brackets above it."""
-    if not brackets:
-        return None
-    prob = 0.0
-    for temp, yes_p, is_lower, is_upper in brackets:
-        if is_upper or temp > threshold:
-            prob += yes_p
-    return prob
-
-
 def _consensus_in_unit(consensus, unit):
     """Convert consensus °C stats into the market's native unit."""
     if unit == "C":
@@ -123,32 +73,23 @@ def _consensus_in_unit(consensus, unit):
     return c_to_f(consensus["median_high"]), consensus["std_high"] * 9.0 / 5.0
 
 
-def _pick_best_threshold(brackets, consensus, unit):
-    """
-    Evaluate every bracket boundary as a "high > t" threshold and return
-    (threshold, our_prob, market_prob) for the largest absolute edge.
-    Skips near-resolved tails (market prob outside the configured band).
-    """
-    median_n, std_n = _consensus_in_unit(consensus, unit)
-    best = None
-    for temp, _, _, is_upper in brackets:
-        if is_upper:
-            continue  # "≥X" has no brackets above it
-        market_p = _market_prob_over(brackets, temp)
-        if market_p is None:
-            continue
-        if not (config.THRESHOLD_MARKET_PROB_MIN <= market_p
-                <= config.THRESHOLD_MARKET_PROB_MAX):
-            continue
-        # Brackets resolve on rounded degrees: "high > t" means rounded >= t+1,
-        # i.e. actual > t + 0.5 in continuous terms.
-        our_p = estimate_probability_over(temp + 0.5, median_n, std_n)
-        edge = our_p - market_p
-        if best is None or abs(edge) > abs(best[3]):
-            best = (temp, our_p, market_p, edge)
-    if best is None:
-        return None, None, None
-    return best[0], best[1], best[2]
+def _bracket_prob(bracket, mu, sigma):
+    """Model probability that the rounded high lands inside a bracket."""
+    lo = bracket["temp_low"] - 0.5
+    hi = bracket["temp"] + 0.5
+    return (estimate_probability_over(lo, mu, sigma)
+            - estimate_probability_over(hi, mu, sigma))
+
+
+def _bracket_live_price(bracket):
+    """Live CLOB midpoint for a bracket, falling back to the Gamma price."""
+    if bracket.get("yes_token_id"):
+        mid = get_midpoint(bracket["yes_token_id"])
+        if mid and mid > 0:
+            return mid, "LIVE (clob)"
+    if bracket.get("final") is not None:
+        return bracket["final"], "gamma cached"
+    return None, "unavailable"
 
 
 # ─── ANALYSIS PIPELINE ────────────────────────────────────────────────────────
@@ -165,6 +106,8 @@ def analyze_contract(contract, execute=False):
         print("  [EXPIRED] Target date has passed. Run 'settle' to resolve.\n")
         return
 
+    lead_days = (date.fromisoformat(target) - date.today()).days
+
     # 1. Market data
     brackets, unit = [], "C"
     market_yes = None
@@ -173,7 +116,7 @@ def analyze_contract(contract, execute=False):
     if contract.get("event_id"):
         ev = get_event(contract["event_id"])
         if ev and ev.get("markets"):
-            brackets, unit = _parse_bracket_event(ev)
+            brackets, unit = parse_bracket_event(ev)
             price_source = "LIVE (event)"
     if not brackets and contract.get("condition_id"):
         market_data = get_market(contract["condition_id"])
@@ -190,10 +133,18 @@ def analyze_contract(contract, execute=False):
         return
 
     if brackets:
-        print(f"  Market brackets ({unit}°):")
-        for temp, yes_p, is_lower, is_upper in brackets:
+        print(f"  Lead: {lead_days} day(s) | Market brackets ({unit}°):")
+        for b in brackets:
+            yes_p = b["final"] or 0.0
             bar = "█" * int(yes_p * 40)
-            label = f"{'≤' if is_lower else '≥' if is_upper else ''}{temp}°{unit}"
+            if b["is_lower"]:
+                label = f"≤{b['temp']}°{unit}"
+            elif b["is_upper"]:
+                label = f"≥{b['temp']}°{unit}"
+            elif b["temp_low"] != b["temp"]:
+                label = f"{b['temp_low']}-{b['temp']}°{unit}"
+            else:
+                label = f"{b['temp']}°{unit}"
             print(f"    {label:<8} {yes_p:5.1%} {bar}")
         print()
 
@@ -220,58 +171,81 @@ def analyze_contract(contract, execute=False):
           f"std={consensus['std_high']:.1f}°C  "
           f"range={consensus['min_high']:.1f}–{consensus['max_high']:.1f}°C")
 
-    # 3. Threshold + probabilities
+    # 3. Strategy
+    signals = []
+    trade_contract = None
+
     if brackets:
-        threshold = contract.get("threshold_c")
-        if threshold is not None:
-            median_n, std_n = _consensus_in_unit(consensus, unit)
-            our_prob = estimate_probability_over(threshold + 0.5, median_n, std_n)
-            market_prob = _market_prob_over(brackets, threshold)
+        # OPEN-WINDOW: value-check the model's modal bracket against its
+        # historical hit rate for this city/lead (backtested strategy).
+        median_n, std_n = _consensus_in_unit(consensus, unit)
+        modal = math.floor(median_n + 0.5)
+        modal_bracket = find_bracket_for(brackets, modal)
+
+        if modal_bracket is None:
+            print(f"  [SKIP] Modal {modal}°{unit} falls outside listed brackets.\n")
+            record_analysis({**contract, "threshold_c": modal}, consensus,
+                            None, None, price_source, "skip:modal_edge")
+            return
+
+        modal_price, px_source = _bracket_live_price(modal_bracket)
+        our_prob = _bracket_prob(modal_bracket, median_n, std_n)
+        threshold = modal_bracket["temp"]
+
+        ow_cfg = config.STRATEGY_CONFIG.get("open_window", {})
+        rates = ow_cfg.get("hit_rates", {}).get(contract["city"].lower(), {})
+        hit_rate = rates.get(min(max(lead_days, 1), 3))
+
+        print(f"  Modal bracket: {modal_bracket['temp_low']}"
+              f"{'-' + str(threshold) if modal_bracket['temp_low'] != threshold else ''}"
+              f"°{unit} | price={modal_price if modal_price is not None else '?'} "
+              f"[{px_source}] | model P={our_prob:.2f} | "
+              f"hit-rate ceiling={hit_rate if hit_rate else 'n/a'} | lead={lead_days}d")
+        print()
+
+        sig = evaluate_open_window(contract["city"], lead_days, modal_price,
+                                   our_prob, ow_cfg)
+        if sig:
+            sig["model_median"] = median_n
+            sig["model_std"] = std_n
+            signals.append(sig)
+            reason = "signal:open_window"
+        elif lead_days < ow_cfg.get("min_lead_days", 2):
+            reason = "no_trade:too_close"
+        elif modal_price is not None and hit_rate and modal_price > hit_rate:
+            reason = "no_trade:overpriced"
         else:
-            threshold, our_prob, market_prob = _pick_best_threshold(
-                brackets, consensus, unit)
-            if threshold is None:
-                print("  [SKIP] No tradeable bracket (market prices near 0/1 everywhere).\n")
-                record_analysis(contract, consensus, None, None, price_source,
-                                "skip:no_bracket")
-                return
+            reason = "no_trade"
+
+        market_prob = modal_price
+        record_analysis({**contract, "threshold_c": threshold}, consensus,
+                        our_prob, market_prob, price_source, reason)
+        trade_contract = {**contract, "threshold_c": threshold,
+                          "bracket_low": modal_bracket["temp_low"],
+                          "bet_type": "bracket", "temp_unit": unit}
     else:
+        # Manual over/under contract: legacy strategies (off by default).
         threshold = contract["threshold_c"]
         our_prob = estimate_probability_over(
             threshold, consensus["median_high"], consensus["std_high"])
         market_prob = market_yes
-
-    edge = our_prob - market_prob
-    print(f"  Best bet: P(high > {threshold}°{unit})  |  "
-          f"Models = {our_prob*100:.1f}%  |  Market = {market_prob*100:.1f}%  |  "
-          f"Edge = {edge*100:+.1f}%")
-    print()
-
-    # 4. Strategy + execution
-    # Strategies compare probabilities in the market's native, rounding-corrected
-    # space, so feed them the adjusted threshold and native-unit consensus.
-    median_n, std_n = _consensus_in_unit(consensus, unit)
-    strategy_contract = {
-        **contract,
-        "threshold_c": threshold + 0.5 if brackets else threshold,
-        "market_yes_price": market_prob,
-    }
-    strategy_consensus = {**consensus, "median_high": median_n, "std_high": std_n}
-    signals = generate_signals(strategy_contract, strategy_consensus,
-                               config.STRATEGY_CONFIG)
-
-    decision = ("signal:" + ",".join(s["strategy"] for s in signals)
-                if signals else "no_trade")
-    analysis_contract = {**contract, "threshold_c": threshold}
-    record_analysis(analysis_contract, consensus, our_prob, market_prob,
-                    price_source, decision)
+        print(f"  P(high > {threshold}°C): models={our_prob*100:.1f}% "
+              f"market={market_prob*100:.0f}%")
+        strategy_contract = {**contract, "market_yes_price": market_prob}
+        signals = generate_signals(strategy_contract, consensus,
+                                   config.STRATEGY_CONFIG)
+        for sig in signals:
+            sig.setdefault("model_median", consensus["median_high"])
+            sig.setdefault("model_std", consensus["std_high"])
+        decision = ("signal:" + ",".join(s["strategy"] for s in signals)
+                    if signals else "no_trade")
+        record_analysis(contract, consensus, our_prob, market_prob,
+                        price_source, decision)
+        trade_contract = {**contract, "bet_type": "over", "temp_unit": "C"}
 
     if not signals:
         print("  [NO TRADE] No strategy triggered.\n")
         return
-
-    trade_contract = {**contract, "threshold_c": threshold,
-                      "temp_unit": unit if brackets else "C"}
     for sig in signals:
         tag = sig["strategy"].replace("_", " ").upper()
         print(f"  >> SIGNAL [{tag}]: {sig['side']} at {sig['entry_price']:.2f}  "
@@ -329,11 +303,19 @@ def cmd_discover(args):
 
     print(f"  OPEN EVENTS ({len(open_events)}):\n")
     for ev in open_events:
-        brackets, unit = _parse_bracket_event(ev)
+        brackets, unit = parse_bracket_event(ev)
         print(f"  Event: {ev.get('title')}  (event_id={ev.get('id')})")
-        for temp, yes_p, is_lower, is_upper in brackets:
+        for b in brackets:
+            yes_p = b["final"] or 0.0
             bar = "█" * int(yes_p * 30)
-            label = f"{'≤' if is_lower else '≥' if is_upper else ''}{temp}°{unit}"
+            if b["is_lower"]:
+                label = f"≤{b['temp']}°{unit}"
+            elif b["is_upper"]:
+                label = f"≥{b['temp']}°{unit}"
+            elif b["temp_low"] != b["temp"]:
+                label = f"{b['temp_low']}-{b['temp']}°{unit}"
+            else:
+                label = f"{b['temp']}°{unit}"
             print(f"    {label:<8} {yes_p:5.1%} {bar}")
         print()
 

@@ -33,14 +33,37 @@ MANUAL_CONTRACTS = []
 CONTRACTS = MANUAL_CONTRACTS
 
 # ─── STRATEGY CONFIGURATION ──────────────────────────────────────────────────
+#
+# open_window (primary, backtested): buy the model's modal bracket in the
+# first days of a market's life, only when its price is at or below the
+# model's historical exact-bracket hit rate for that city and lead time.
+# Backtest (Feb-Jul 2026, London+Seoul): +16.7% ROI over 177 trades.
+#
+# The legacy over/under strategies are kept but DISABLED: replayed at
+# ~breakeven and the max-edge threshold pick is adverse selection
+# (see backtest/MODEL_SKILL_REPORT.md).
 STRATEGY_CONFIG = {
-    "consensus_edge": {
+    "open_window": {
         "enabled": True,
-        "min_edge": 0.15,           # minimum |our_prob - market_prob| to trade
-        "max_std_dev_c": 3.0,       # skip if models disagree more than this
+        "min_lead_days": 2,         # never trade the day before / same day
+        "max_lead_days": 3,
+        "entry_margin": 0.0,        # ceiling = hit_rate - margin
+        "min_price": 0.04,          # skip dust-priced brackets
+        # historical exact-bracket hit rate of the ensemble median,
+        # per city (lowercase) and lead in days — from backtest/model_skill.py
+        "hit_rates": {
+            "london": {1: 0.50, 2: 0.455, 3: 0.40},
+            "seoul": {1: 0.37, 2: 0.34, 3: 0.28},
+            "nyc": {1: 0.30, 2: 0.23, 3: 0.19},
+        },
+    },
+    "consensus_edge": {
+        "enabled": False,
+        "min_edge": 0.15,
+        "max_std_dev_c": 3.0,
     },
     "high_confidence": {
-        "enabled": True,
+        "enabled": False,
         "max_std_dev_c": 1.0,
         "min_probability": 0.75,
     },
@@ -57,7 +80,9 @@ STARTING_BALANCE = 1000.0
 MIN_MODELS_REQUIRED = 3
 
 # ─── SCHEDULER ────────────────────────────────────────────────────────────────
-DEFAULT_INTERVAL_MINUTES = 360
+# Shorter interval so newly created markets (the open window) are caught
+# within a few hours of listing.
+DEFAULT_INTERVAL_MINUTES = 180
 
 # ─── DATABASE ─────────────────────────────────────────────────────────────────
 # On the VPS this resolves inside /opt/polymarket-bot (the service WorkingDirectory)
