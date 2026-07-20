@@ -170,6 +170,40 @@ def execute_trade(signal, contract, db_path=None):
     return trade_id
 
 
+def is_circuit_broken(db_path=None):
+    """
+    Trading halt after a losing streak: if the last N settled open_window
+    trades are all losses, pause new trades for a cooldown period after the
+    most recent loss. Analysis/logging continues while halted.
+    """
+    cb = getattr(config, "CIRCUIT_BREAKER", {})
+    if not cb.get("enabled", True):
+        return False
+    n = cb.get("max_consecutive_losses", 5)
+    cooldown_days = cb.get("cooldown_days", 7)
+
+    conn = _get_db(db_path)
+    rows = conn.execute(
+        """SELECT outcome, settled_at FROM trades
+           WHERE strategy = 'open_window' AND status = 'settled'
+           ORDER BY settled_at DESC LIMIT ?""", (n,)
+    ).fetchall()
+    conn.close()
+
+    if len(rows) < n or any(r["outcome"] != "loss" for r in rows):
+        return False
+
+    last = rows[0]["settled_at"]
+    try:
+        last_dt = datetime.fromisoformat(last)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    age_days = (datetime.now(timezone.utc) - last_dt).total_seconds() / 86400
+    return age_days < cooldown_days
+
+
 def has_open_trade(contract_id, strategy, db_path=None):
     """Check if there's already an open trade for this contract+strategy."""
     conn = _get_db(db_path)
@@ -423,6 +457,7 @@ def get_metrics(db_path=None):
         d["roi"] = d["pnl"] / d["staked"] if d["staked"] else 0
 
     return {
+        "circuit_broken": is_circuit_broken(db_path),
         "total_trades": len(all_trades),
         "open_trades": len(open_trades),
         "settled_trades": len(settled),

@@ -31,6 +31,7 @@ from polymarket_bot.trader import (
     init_db,
     execute_trade,
     has_open_trade,
+    is_circuit_broken,
     settle_trades,
     get_balance,
     get_metrics,
@@ -100,7 +101,8 @@ def analyze_contract(contract, execute=False):
     target = contract["target_date"]
 
     print(f"  Contract: {contract.get('description', contract_id)}")
-    print(f"  City: {contract['city']} | Date: {target}")
+    station = f" | Station: {contract['station']}" if contract.get("station") else ""
+    print(f"  City: {contract['city']} | Date: {target}{station}")
 
     if target < date.today().isoformat():
         print("  [EXPIRED] Target date has passed. Run 'settle' to resolve.\n")
@@ -166,7 +168,7 @@ def analyze_contract(contract, execute=False):
         print(f"  {name:<13} {'N/A':>8} {'N/A':>8}")
     print()
 
-    consensus = compute_consensus(results)
+    consensus = compute_consensus(results, robust=True)
     print(f"  Consensus: median={consensus['median_high']:.1f}°C  "
           f"std={consensus['std_high']:.1f}°C  "
           f"range={consensus['min_high']:.1f}–{consensus['max_high']:.1f}°C")
@@ -252,7 +254,10 @@ def analyze_contract(contract, execute=False):
               f"(edge: {sig['edge']*100:.1f}%)")
 
         if execute:
-            if has_open_trade(contract_id, sig["strategy"]):
+            if is_circuit_broken():
+                print("     CIRCUIT BREAKER ACTIVE — losing streak cooldown, "
+                      "trade not placed.")
+            elif has_open_trade(contract_id, sig["strategy"]):
                 print("     Already have open trade for this contract+strategy. Skipping.")
             else:
                 trade_id = execute_trade(sig, trade_contract)

@@ -10,7 +10,8 @@ the bracket boundary with the largest model-vs-market edge.
 import re
 from datetime import date
 
-from polymarket_bot.polymarket_api import search_temperature_markets
+from polymarket_bot.polymarket_api import search_temperature_markets, get_event
+from polymarket_bot.stations import resolve_station
 
 _MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
@@ -64,16 +65,33 @@ def build_auto_contracts(cities, max_days_ahead=3):
             if (target - today).days > max_days_ahead:
                 continue
 
+            # Forecast the RESOLUTION STATION, not the generic city point
+            # (see backtest/EDGE_COMPARISON.md — this was the July failure).
+            lat, lon = city_cfg["lat"], city_cfg["lon"]
+            station = None
+            info = resolve_station(ev)
+            if info is None and ev.get("id"):
+                full = get_event(ev["id"])
+                if full:
+                    info = resolve_station(full)
+            if info:
+                code, s_lat, s_lon = info
+                station = code
+                if s_lat is not None:
+                    lat, lon = s_lat, s_lon
+
             contracts.append({
                 "id": f"{city.lower().replace(' ', '-')}-high-{target.isoformat()}",
                 "city": city,
-                "lat": city_cfg["lat"],
-                "lon": city_cfg["lon"],
+                "lat": lat,
+                "lon": lon,
+                "station": station,
                 "timezone": city_cfg["timezone"],
                 "target_date": target.isoformat(),
                 "threshold_c": None,          # auto-picked from brackets
                 "event_id": ev.get("id"),
-                "description": ev.get("title"),
+                "description": (ev.get("title") or "") +
+                               (f" @ {station}" if station else ""),
             })
 
     # Sort by date so output reads chronologically

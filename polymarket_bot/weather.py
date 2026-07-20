@@ -4,6 +4,7 @@ Pulls from multiple NWP models and computes consensus statistics.
 """
 
 import math
+import statistics
 
 try:
     import requests as _req
@@ -67,10 +68,24 @@ def fetch_all_models(lat, lon, timezone, target_date):
     return results, errors
 
 
-def compute_consensus(results):
-    """Compute consensus statistics from model results."""
+def compute_consensus(results, robust=False):
+    """
+    Compute consensus statistics from model results.
+
+    robust=True drops any model whose high is >3°C from the median of its
+    peers (needs >=4 models, keeps >=3) — a single diverging model (e.g. JMA
+    during July 2026) otherwise poisons the spread.
+    """
     if not results:
         return None
+    if robust and len(results) >= 4:
+        kept = []
+        for r in results:
+            peers = [x["high_c"] for x in results if x is not r]
+            if abs(r["high_c"] - statistics.median(peers)) <= 3.0:
+                kept.append(r)
+        if len(kept) >= 3:
+            results = kept
     highs = [r["high_c"] for r in results]
     lows = [r["low_c"] for r in results]
     n = len(highs)

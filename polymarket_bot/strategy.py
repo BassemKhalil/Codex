@@ -142,6 +142,13 @@ def evaluate_open_window(city, lead_days, modal_price, model_bracket_prob,
     if modal_price > ceiling:
         return None
 
+    # Model-EV gate: never pay more than our own model's probability for
+    # the bracket. Without this, 8 of 10 July 2026 trades were bought at
+    # prices above the model's own estimate.
+    if strategy_cfg.get("require_model_ev", True):
+        if model_bracket_prob is None or model_bracket_prob < modal_price:
+            return None
+
     return {
         "strategy": "open_window",
         "side": "YES",

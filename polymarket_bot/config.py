@@ -49,6 +49,7 @@ STRATEGY_CONFIG = {
         "max_lead_days": 3,
         "entry_margin": 0.0,        # ceiling = hit_rate - margin
         "min_price": 0.04,          # skip dust-priced brackets
+        "require_model_ev": True,   # never pay above the model's own P(bracket)
         # historical exact-bracket hit rate of the ensemble median,
         # per city (lowercase) and lead in days — from backtest/model_skill.py
         "hit_rates": {
@@ -78,6 +79,13 @@ THRESHOLD_MARKET_PROB_MAX = 0.97
 STAKE_PER_TRADE = 10.0
 STARTING_BALANCE = 1000.0
 MIN_MODELS_REQUIRED = 3
+
+# Pause new trades after a losing streak (analysis continues while halted).
+CIRCUIT_BREAKER = {
+    "enabled": True,
+    "max_consecutive_losses": 5,
+    "cooldown_days": 7,
+}
 
 # ─── SCHEDULER ────────────────────────────────────────────────────────────────
 # Shorter interval so newly created markets (the open window) are caught
