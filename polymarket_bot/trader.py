@@ -181,12 +181,16 @@ def is_circuit_broken(db_path=None):
         return False
     n = cb.get("max_consecutive_losses", 5)
     cooldown_days = cb.get("cooldown_days", 7)
+    # Only judge the current strategy generation by its own trades —
+    # losses from a superseded configuration must not arm the breaker.
+    watermark = cb.get("ignore_trades_before", "")
 
     conn = _get_db(db_path)
     rows = conn.execute(
         """SELECT outcome, settled_at FROM trades
            WHERE strategy = 'open_window' AND status = 'settled'
-           ORDER BY settled_at DESC LIMIT ?""", (n,)
+             AND timestamp >= ?
+           ORDER BY settled_at DESC LIMIT ?""", (watermark, n)
     ).fetchall()
     conn.close()
 

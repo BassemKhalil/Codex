@@ -81,10 +81,14 @@ STARTING_BALANCE = 1000.0
 MIN_MODELS_REQUIRED = 3
 
 # Pause new trades after a losing streak (analysis continues while halted).
+# ignore_trades_before: strategy-generation watermark — trades placed before
+# this moment (i.e. under a previous strategy configuration) never count
+# toward the streak. Update it whenever the strategy is fundamentally changed.
 CIRCUIT_BREAKER = {
     "enabled": True,
     "max_consecutive_losses": 5,
     "cooldown_days": 7,
+    "ignore_trades_before": "2026-07-20T14:00:00+00:00",  # station-true deploy
 }
 
 # ─── SCHEDULER ────────────────────────────────────────────────────────────────
