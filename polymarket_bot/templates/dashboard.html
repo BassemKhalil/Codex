@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="300">
+  <title>Polymarket Weather Bot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      background: #0f0f1a; color: #e0e0e0;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      padding: 20px 16px; line-height: 1.45;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    .card { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; }
+    h1 { color: #fff; font-size: 1.4rem; }
+    h2 { color: #cbd5e1; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
+    .sub { color: #6b7280; font-size: 0.75rem; margin-top: 4px; }
+    .muted { color: #6b7280; }
+    .mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+
+    .header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
+    .balance { text-align: right; }
+    .balance .amount { font-size: 1.9rem; font-weight: 700; color: #fff; font-family: ui-monospace, Menlo, monospace; }
+
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); text-align: center; gap: 8px; }
+    @media (max-width: 640px) { .stats { grid-template-columns: repeat(2, 1fr); row-gap: 16px; } }
+    .stat .v { font-size: 1.5rem; font-weight: 700; color: #fff; }
+    .stat .k { font-size: 0.68rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+
+    .legacy-note { color: #565f6e; font-size: 0.75rem; margin: -8px 4px 18px; }
+
+    .mkt { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+           border: 1px solid #22223a; border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; }
+    .mkt .when { width: 120px; flex-shrink: 0; }
+    .mkt .when .d { color: #fff; font-weight: 600; font-size: 0.9rem; }
+    .mkt .bars { flex: 1; min-width: 200px; }
+    .bar { height: 6px; border-radius: 3px; background: #2a2a4a; overflow: hidden; margin-top: 3px; }
+    .bar div { height: 100%; border-radius: 3px; }
+    .bar .model { background: #38bdf8; }
+    .bar .market { background: #6b7280; }
+    .barlabel { display: flex; justify-content: space-between; font-size: 0.72rem; margin-bottom: 2px; }
+
+    .badge { padding: 3px 10px; border-radius: 999px; font-size: 0.7rem; font-weight: 600; white-space: nowrap; }
+    .b-win   { background: #22c55e22; color: #4ade80; }
+    .b-loss  { background: #ef444422; color: #f87171; }
+    .b-open  { background: #3b82f622; color: #60a5fa; }
+    .b-idle  { background: #6b728022; color: #9ca3af; }
+    .b-amber { background: #f59e0b22; color: #fbbf24; }
+
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+    th { color: #9ca3af; font-weight: 600; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    td, th { padding: 8px 10px; text-align: left; border-bottom: 1px solid #22223a; white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+    .num { font-family: ui-monospace, Menlo, monospace; }
+    .pos { color: #4ade80; } .neg { color: #f87171; }
+    .tablewrap { overflow-x: auto; }
+
+    details summary { cursor: pointer; list-style: none; color: #6b7280; font-size: 0.8rem;
+                      text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+    details summary::-webkit-details-marker { display: none; }
+    details[open] summary { margin-bottom: 12px; }
+    .dim td { opacity: 0.55; }
+
+    svg text { font-family: ui-monospace, Menlo, monospace; font-size: 11px; fill: #6b7280; }
+    .footer { text-align: center; color: #4b5563; font-size: 0.72rem; margin: 26px 0 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="header">
+      <div>
+        <h1>Polymarket Weather Bot</h1>
+        <div class="sub">Station-true strategy · live since {{ epoch[:10] }} · page refreshes every 5 min</div>
+        {% if metrics.circuit_broken %}
+        <div style="margin-top:8px"><span class="badge b-loss">⛔ CIRCUIT BREAKER — trading paused after losing streak</span></div>
+        {% endif %}
+      </div>
+      <div class="balance">
+        <div class="amount">${{ "%.2f"|format(metrics.balance) }}</div>
+        <div class="sub">balance · started ${{ "%.0f"|format(config.STARTING_BALANCE) }}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="stats">
+        <div class="stat">
+          <div class="v">{{ metrics.total_trades }}</div>
+          <div class="k">Trades</div>
+        </div>
+        <div class="stat">
+          <div class="v">{{ metrics.open_trades }}</div>
+          <div class="k">Open</div>
+        </div>
+        <div class="stat">
+          <div class="v">{% if metrics.settled_trades %}{{ "%.0f"|format(metrics.win_rate * 100) }}%{% else %}—{% endif %}</div>
+          <div class="k">Win rate{% if metrics.settled_trades %} · {{ metrics.wins }}W/{{ metrics.losses }}L{% endif %}</div>
+        </div>
+        <div class="stat">
+          <div class="v {{ 'pos' if metrics.total_pnl >= 0 else 'neg' }}">{{ "+" if metrics.total_pnl >= 0 else "" }}${{ "%.2f"|format(metrics.total_pnl) }}</div>
+          <div class="k">P&amp;L</div>
+        </div>
+        <div class="stat">
+          <div class="v {{ 'pos' if metrics.roi >= 0 else 'neg' }}">{% if metrics.settled_trades %}{{ "%+.0f"|format(metrics.roi * 100) }}%{% else %}—{% endif %}</div>
+          <div class="k">ROI</div>
+        </div>
+      </div>
+    </div>
+    {% if metrics.legacy.trades %}
+    <p class="legacy-note">
+      Retired strategies (before {{ epoch[:10] }}): {{ metrics.legacy.trades }} trades ·
+      {{ metrics.legacy.wins }}W/{{ metrics.legacy.losses }}L ·
+      {{ "+" if metrics.legacy.pnl >= 0 else "" }}${{ "%.2f"|format(metrics.legacy.pnl) }} —
+      not counted above, log at the bottom.
+    </p>
+    {% endif %}
+
+    {% if analyses %}
+    <div class="card">
+      <h2>Live Markets</h2>
+      <p class="sub" style="margin-bottom:14px">The bot only trades 2–3 days ahead, and never pays more than its own model probability.</p>
+      {% for a in analyses %}
+      {% set traded = open_positions | selectattr('contract_id', 'equalto', a.contract_id) | list %}
+      <div class="mkt">
+        <div class="when">
+          <div class="d">{{ a.target_date }}</div>
+          <div class="sub">{{ a.city }}{% if 'EGLC' in (a.description or '') %} · EGLC{% endif %}</div>
+        </div>
+        {% if a.our_probability is not none and a.market_probability is not none %}
+        <div class="bars">
+          <div class="barlabel">
+            <span class="muted">bracket {{ "%.0f"|format(a.threshold_c) }}°C</span>
+            <span class="mono"><span style="color:#38bdf8">model {{ "%.0f"|format(a.our_probability * 100) }}%</span>
+              <span class="muted">vs</span> market {{ "%.0f"|format(a.market_probability * 100) }}%</span>
+          </div>
+          <div class="bar"><div class="model" style="width: {{ (a.our_probability * 100) | round }}%"></div></div>
+          <div class="bar"><div class="market" style="width: {{ (a.market_probability * 100) | round }}%"></div></div>
+        </div>
+        {% else %}
+        <div class="bars sub">no forecast / market data this cycle</div>
+        {% endif %}
+        <div>
+          {% if traded %}
+            <span class="badge b-win">POSITION OPEN @ {{ "%.2f"|format(traded[0].entry_price) }}</span>
+          {% elif a.decision.startswith('signal') %}
+            <span class="badge b-win">SIGNAL</span>
+          {% elif a.decision == 'no_trade:too_close' %}
+            <span class="badge b-idle">TOO CLOSE — watch only</span>
+          {% elif a.decision.startswith('skip') %}
+            <span class="badge b-idle">NO DATA</span>
+          {% else %}
+            <span class="badge b-amber">IN WINDOW — waiting for value</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if spark %}
+    <div class="card">
+      <h2>Balance — current strategy era</h2>
+      <svg viewBox="0 0 {{ spark.width }} {{ spark.height + 24 }}" width="100%" preserveAspectRatio="none" role="img" aria-label="balance chart">
+        <polyline points="{{ spark.points }}" fill="none" stroke="#38bdf8" stroke-width="2"
+                  vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/>
+        <text x="8" y="{{ spark.height + 16 }}">{{ spark.start_label }} · ${{ "%.0f"|format(spark.first) }}</text>
+        <text x="{{ spark.width - 8 }}" y="{{ spark.height + 16 }}" text-anchor="end">{{ spark.end_label }} · ${{ "%.0f"|format(spark.last) }}</text>
+      </svg>
+      <div class="sub" style="display:flex;justify-content:space-between">
+        <span>low ${{ "%.2f"|format(spark.min) }}</span><span>high ${{ "%.2f"|format(spark.max) }}</span>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <h2>Trades — station-true strategy</h2>
+      {% if trades %}
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>Placed</th><th>Market</th><th>Bracket</th><th>Entry</th><th>Result</th><th>Actual</th><th>P&amp;L</th></tr>
+          </thead>
+          <tbody>
+            {% for t in trades %}
+            <tr>
+              <td class="muted">{{ t.timestamp[5:16].replace('T', ' ') }}</td>
+              <td style="color:#fff">{{ t.description or t.contract_id }}</td>
+              <td class="num">{{ "%.0f"|format(t.threshold_c) }}°C</td>
+              <td class="num">{{ "%.2f"|format(t.entry_price) }}</td>
+              <td>
+                {% if t.status == 'open' %}<span class="badge b-open">OPEN</span>
+                {% elif t.outcome == 'win' %}<span class="badge b-win">WIN</span>
+                {% else %}<span class="badge b-loss">LOSS</span>{% endif %}
+              </td>
+              <td class="num">{% if t.actual_temp_c is not none %}{{ "%.0f"|format(t.actual_temp_c) }}°C{% else %}—{% endif %}</td>
+              <td class="num {{ 'pos' if t.pnl and t.pnl >= 0 else 'neg' if t.pnl else '' }}">
+                {% if t.pnl is not none %}{{ "+" if t.pnl >= 0 else "" }}${{ "%.2f"|format(t.pnl) }}{% else %}—{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="sub" style="text-align:center;padding:18px 0">No trades yet under the current strategy — it only buys when its model says the price is cheap.</p>
+      {% endif %}
+    </div>
+
+    {% if legacy_trades %}
+    <details class="card">
+      <summary>▸ Retired strategies — {{ legacy_trades|length }} trades (tap to expand)</summary>
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>Placed</th><th>Market</th><th>Strategy</th><th>Entry</th><th>Result</th><th>P&amp;L</th></tr>
+          </thead>
+          <tbody>
+            {% for t in legacy_trades %}
+            <tr class="dim">
+              <td class="muted">{{ t.timestamp[5:16].replace('T', ' ') }}</td>
+              <td>{{ t.description or t.contract_id }}</td>
+              <td class="muted">{{ t.strategy }}</td>
+              <td class="num">{{ "%.2f"|format(t.entry_price) }}</td>
+              <td>
+                {% if t.status == 'open' %}<span class="badge b-open">OPEN</span>
+                {% elif t.outcome == 'win' %}<span class="badge b-win">WIN</span>
+                {% else %}<span class="badge b-loss">LOSS</span>{% endif %}
+              </td>
+              <td class="num {{ 'pos' if t.pnl and t.pnl >= 0 else 'neg' if t.pnl else '' }}">
+                {% if t.pnl is not none %}{{ "+" if t.pnl >= 0 else "" }}${{ "%.2f"|format(t.pnl) }}{% else %}—{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
+
+    <div class="footer">Polymarket Weather Bot · Paper Trading Mode · Not Financial Advice</div>
+  </div>
+</body>
+</html>
