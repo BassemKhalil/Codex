@@ -21,6 +21,7 @@ from polymarket_bot.trader import (
     get_latest_analyses,
     get_analysis_history,
     settle_trades,
+    strategy_epoch,
     init_db,
 )
 
@@ -67,15 +68,45 @@ def _try_settle():
         pass
 
 
+def _sparkline(history, epoch, width=1000, height=160, pad=8):
+    """Normalized SVG polyline points for the balance chart (no JS deps)."""
+    rows = [h for h in history if h["timestamp"] >= epoch]
+    if len(rows) < 2:
+        rows = history
+    if len(rows) < 2:
+        return None
+    vals = [r["balance"] for r in rows]
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1.0
+    pts = []
+    for i, v in enumerate(vals):
+        x = pad + i * (width - 2 * pad) / (len(vals) - 1)
+        y = pad + (hi - v) * (height - 2 * pad) / span
+        pts.append(f"{x:.1f},{y:.1f}")
+    return {
+        "points": " ".join(pts),
+        "min": lo, "max": hi,
+        "start_label": rows[0]["timestamp"][5:10],
+        "end_label": rows[-1]["timestamp"][5:10],
+        "last": vals[-1], "first": vals[0],
+        "width": width, "height": height,
+    }
+
+
 @app.route("/")
 def index():
     _try_settle()
+    epoch = strategy_epoch()
+    all_trades = get_all_trades()
     return render_template(
         "dashboard.html",
         metrics=get_metrics(),
-        trades=get_all_trades(),
+        trades=[t for t in all_trades if t["timestamp"] >= epoch],
+        legacy_trades=[t for t in all_trades if t["timestamp"] < epoch],
         open_positions=get_open_trades(),
         analyses=get_latest_analyses(),
+        spark=_sparkline(get_balance_history(), epoch),
+        epoch=epoch,
         config=config,
     )
 

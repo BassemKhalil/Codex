@@ -252,15 +252,21 @@ def record_analysis(contract, consensus, our_prob, market_prob, price_source,
     conn.close()
 
 
-def get_latest_analyses(db_path=None):
-    """Most recent analysis per contract."""
+def get_latest_analyses(db_path=None, live_only=True):
+    """
+    Most recent analysis per contract. live_only drops contracts whose
+    target date has passed — expired markets are history, not status.
+    """
     conn = _get_db(db_path)
+    today = datetime.now(timezone.utc).date().isoformat()
     rows = conn.execute(
         """SELECT a.* FROM analyses a
            INNER JOIN (
                SELECT contract_id, MAX(id) AS max_id FROM analyses GROUP BY contract_id
            ) latest ON a.id = latest.max_id
-           ORDER BY a.target_date"""
+           WHERE a.target_date >= ?
+           ORDER BY a.target_date""",
+        (today if live_only else "",),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -433,11 +439,25 @@ def get_balance_history(db_path=None):
     return [dict(r) for r in rows]
 
 
+def strategy_epoch():
+    """Start of the current strategy generation (station-true deploy)."""
+    return getattr(config, "CIRCUIT_BREAKER", {}).get("ignore_trades_before", "")
+
+
 def get_metrics(db_path=None):
-    """Compute aggregate trading metrics."""
+    """
+    Aggregate trading metrics for the CURRENT strategy generation.
+    Trades placed before strategy_epoch() are summarized separately under
+    "legacy" so a retired configuration's record doesn't pollute the
+    headline stats.
+    """
+    epoch = strategy_epoch()
     all_trades = get_all_trades(db_path)
-    settled = [t for t in all_trades if t["status"] == "settled"]
-    open_trades = [t for t in all_trades if t["status"] == "open"]
+    current = [t for t in all_trades if t["timestamp"] >= epoch]
+    legacy = [t for t in all_trades if t["timestamp"] < epoch]
+
+    settled = [t for t in current if t["status"] == "settled"]
+    open_trades = [t for t in current if t["status"] == "open"]
     wins = [t for t in settled if t["outcome"] == "win"]
     losses = [t for t in settled if t["outcome"] == "loss"]
 
@@ -460,9 +480,18 @@ def get_metrics(db_path=None):
         d["win_rate"] = d["wins"] / d["trades"] if d["trades"] else 0
         d["roi"] = d["pnl"] / d["staked"] if d["staked"] else 0
 
+    legacy_settled = [t for t in legacy if t["status"] == "settled"]
+    legacy_summary = {
+        "trades": len(legacy),
+        "wins": sum(1 for t in legacy_settled if t["outcome"] == "win"),
+        "losses": sum(1 for t in legacy_settled if t["outcome"] == "loss"),
+        "pnl": sum(t["pnl"] for t in legacy_settled),
+    }
+
     return {
         "circuit_broken": is_circuit_broken(db_path),
-        "total_trades": len(all_trades),
+        "epoch": epoch,
+        "total_trades": len(current),
         "open_trades": len(open_trades),
         "settled_trades": len(settled),
         "wins": len(wins),
@@ -472,7 +501,8 @@ def get_metrics(db_path=None):
         "roi": total_pnl / total_staked if total_staked else 0,
         "balance": get_balance(db_path),
         "avg_edge": (
-            sum(t["edge"] for t in all_trades) / len(all_trades) if all_trades else 0
+            sum(t["edge"] for t in current) / len(current) if current else 0
         ),
         "by_strategy": by_strategy,
+        "legacy": legacy_summary,
     }
